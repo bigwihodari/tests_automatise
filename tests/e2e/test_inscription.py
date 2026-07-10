@@ -2,7 +2,7 @@ import pytest
 
 
 @pytest.mark.e2e
-def test_inscription_a_un_cours_affiche_la_confirmation(session_connectee):
+def test_inscription_a_un_cours_affiche_la_confirmation(session_connectee, apprenant):
     # Arrange
     dashboard = session_connectee
     catalogue = dashboard.ouvrir_catalogue()
@@ -12,7 +12,7 @@ def test_inscription_a_un_cours_affiche_la_confirmation(session_connectee):
 
     # Act
     inscription = catalogue.s_inscrire_au_cours(premier_cours)
-    inscription.valider_inscription(nom="Alice Dupont", motivation="Envie d'apprendre")
+    inscription.valider_inscription(nom=apprenant["nom"], motivation="Envie d'apprendre")
 
     # Assert
     message = inscription.message_confirmation()
