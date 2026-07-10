@@ -40,7 +40,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Lancer les tests unitaires et mockes
-        run: pytest -v -m unit --junitxml=unit-report.xml
+        run: pytest -v -m unit --junitxml=unit-report.xml --html=rapport.html --self-contained-html
 
       - name: Publier le rapport de tests
         if: always()
@@ -48,6 +48,13 @@ jobs:
         with:
           name: unit-test-report
           path: unit-report.xml
+
+      - name: Publier le rapport HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-tests-unitaires
+          path: rapport.html
 
   e2e_tests:
     name: Tests E2E (Selenium)
@@ -71,7 +78,7 @@ jobs:
         env:
           HEADLESS: "1"
           BASE_URL: "http://localhost:8000"
-        run: pytest -v -m e2e --junitxml=e2e-report.xml
+        run: pytest -v -m e2e --junitxml=e2e-report.xml --html=rapport.html --self-contained-html
 
       - name: Publier le rapport de tests
         if: always()
@@ -79,3 +86,10 @@ jobs:
         with:
           name: e2e-test-report
           path: e2e-report.xml
+
+      - name: Publier le rapport HTML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-tests-e2e
+          path: rapport.html
