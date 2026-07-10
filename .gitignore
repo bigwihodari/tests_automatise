@@ -5,4 +5,7 @@ __pycache__/
 .env
 *-report.xml
 rapport.html
+htmlcov/
+.coverage
+.coverage.*
 .claude/

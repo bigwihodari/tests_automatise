@@ -162,3 +162,27 @@ def apprenant():
     }
     yield donnees
     supprimer_compte(donnees["email"])
+
+
+def pytest_collection_modifyitems(items):
+    """Applique un rerun cible, uniquement aux tests qui dependent du fixture 'driver'.
+
+    Pourquoi : la stabilisation des tests E2E se fait d'abord via des attentes explicites
+    (WebDriverWait, voir pages/base_page.py) : aucun 'time.sleep' fixe n'existe dans le
+    code de page ou de test. Ce rerun n'est PAS la pour masquer un test qui echoue sur une
+    assertion metier (celui-la echouera de la meme facon a chaque tentative).
+
+    Il couvre une seule cause identifiee et documentee : le lancement du processus
+    navigateur (Chrome/Firefox) echoue parfois pour des raisons d'environnement local
+    (contention memoire/CPU au demarrage), independamment du code applicatif. Observe
+    concretement pendant ce projet :
+      - Chrome : SessionNotCreatedException "DevToolsActivePort file doesn't exist"
+      - Firefox : WebDriverException "Process unexpectedly closed with status 0"
+    Dans les deux cas, un simple retry a suffi (la deuxieme tentative passait).
+
+    reruns=1 (pas 3) : un seul filet de securite, pas une machine a cacher les bugs.
+    Les tests unitaires (aucun fixture 'driver') ne sont jamais concernes.
+    """
+    for item in items:
+        if "driver" in item.fixturenames:
+            item.add_marker(pytest.mark.flaky(reruns=1, reruns_delay=2))
