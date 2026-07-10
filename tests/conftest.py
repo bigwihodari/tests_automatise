@@ -10,7 +10,8 @@ import requests
 from dotenv import load_dotenv
 from faker import Faker
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
 
 from inscription import supprimer_compte
 from pages.login_page import LoginPage
@@ -21,7 +22,32 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 # override=False : une variable deja definie dans l'environnement (ex: par la CI) n'est jamais ecrasee.
 load_dotenv(APP_ROOT / ".env", override=False)
 
-BASE_URL = os.getenv("BASE_URL", "http://localhost:8000")
+
+def _port_dedie_au_worker(port_defaut=8000):
+    """Sous pytest-xdist, chaque worker est un process separe. S'ils demarrent chacun
+    leur propre serveur local sur le meme port par defaut, ils se marchent dessus
+    (port deja utilise, ou pire : un worker termine "son" serveur pendant qu'un autre
+    processus s'en sert encore). On donne donc un port distinct a chaque worker.
+    """
+    worker_id = os.environ.get("PYTEST_XDIST_WORKER")  # ex: "gw0" ; absent hors xdist
+    if not worker_id or worker_id == "master":
+        return port_defaut
+    index = int(worker_id.replace("gw", ""))
+    return port_defaut + 1 + index
+
+
+_BASE_URL_EXPLICITE = os.getenv("BASE_URL")
+if _BASE_URL_EXPLICITE:
+    # BASE_URL fixee volontairement (ex: serveur partage en CI) : on la respecte telle quelle.
+    BASE_URL = _BASE_URL_EXPLICITE
+    PORT_SERVEUR_LOCAL = None
+else:
+    PORT_SERVEUR_LOCAL = _port_dedie_au_worker()
+    BASE_URL = f"http://localhost:{PORT_SERVEUR_LOCAL}"
+
+# Propage vers os.environ pour que le reste du code de ce process (ex: inscription.supprimer_compte,
+# qui relit BASE_URL via os.getenv) cible le meme serveur, y compris sous xdist.
+os.environ["BASE_URL"] = BASE_URL
 
 # Identifiants du compte de test, centralises ici : un seul endroit a changer.
 COMPTE_TEST_EMAIL = os.getenv("TEST_EMAIL", "eleve.test@codeunmax.fr")
@@ -57,10 +83,11 @@ def live_server():
         yield BASE_URL
         return
 
+    port = PORT_SERVEUR_LOCAL if PORT_SERVEUR_LOCAL is not None else 8000
     processus = subprocess.Popen(
         [sys.executable, "server.py"],
         cwd=APP_ROOT,
-        env={**os.environ, "BASE_URL": BASE_URL},
+        env={**os.environ, "BASE_URL": BASE_URL, "PORT": str(port)},
     )
     try:
         _attendre_serveur_pret(BASE_URL)
@@ -70,18 +97,40 @@ def live_server():
         processus.wait(timeout=5)
 
 
-@pytest.fixture
-def driver():
-    """Fournit un WebDriver Chrome, headless par defaut (HEADLESS=0 pour deboguer en local)."""
-    headless = os.getenv("HEADLESS", "1") != "0"
-    options = Options()
+def _navigateur_chrome(headless):
+    options = ChromeOptions()
     if headless:
         options.add_argument("--headless=new")
     options.add_argument("--window-size=1280,900")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
+    return webdriver.Chrome(options=options)
 
-    navigateur = webdriver.Chrome(options=options)
+
+def _navigateur_firefox(headless):
+    options = FirefoxOptions()
+    if headless:
+        options.add_argument("-headless")
+    options.add_argument("--width=1280")
+    options.add_argument("--height=900")
+    return webdriver.Firefox(options=options)
+
+
+NAVIGATEURS = {
+    "chrome": _navigateur_chrome,
+    "firefox": _navigateur_firefox,
+}
+
+
+@pytest.fixture(params=["chrome", "firefox"])
+def driver(request):
+    """Fournit un WebDriver (Chrome ou Firefox selon le parametre), headless par defaut.
+
+    Parametree : chaque test qui utilise cette fixture s'execute une fois par navigateur,
+    avec un nom de test distinct (ex: test_xxx[chrome], test_xxx[firefox]).
+    """
+    headless = os.getenv("HEADLESS", "1") != "0"
+    navigateur = NAVIGATEURS[request.param](headless)
     # Strategie d'attente unique : attentes explicites (WebDriverWait) via BasePage,
     # pas d'implicit wait ici pour ne pas cumuler les deux mecanismes.
     try:
