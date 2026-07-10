@@ -40,7 +40,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Lancer les tests unitaires et mockes
-        run: pytest -v -m unit --junitxml=unit-report.xml --html=rapport.html --self-contained-html
+        run: pytest -v -m unit --disable-socket --junitxml=unit-report.xml --html=rapport.html --self-contained-html
 
       - name: Publier le rapport de tests
         if: always()
