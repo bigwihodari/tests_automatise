@@ -1,7 +1,7 @@
 import os
+import random
 import subprocess
 import sys
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -24,60 +24,7 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(APP_ROOT / ".env", override=False)
 
 
-def _port_libre():
-    """Port TCP local a utiliser pour le serveur de ce process, sans jamais l'ouvrir
-    puis le relacher (voir historique des deux tentatives precedentes ci-dessous).
-
-    Sous pytest-xdist, chaque worker est un process separe : s'ils demarrent chacun
-    leur propre serveur local sur le meme port, ils se marchent dessus (port deja
-    utilise, ou pire : un worker termine "son" serveur pendant qu'un autre s'en sert
-    encore).
-
-    Tentative 1 : port calcule a partir de l'index du worker xdist (PYTEST_XDIST_WORKER,
-    ex: "gw0"). Observe en CI (Linux) : au moins deux workers sont retombes sur le meme
-    port par defaut malgre ce calcul, collision reproductible a chaque rerun.
-
-    Tentative 2 : demander un port libre a l'OS via bind(0) puis le relacher aussitot.
-    Toujours en CI : plusieurs workers ont obtenu EXACTEMENT le meme port (ex: 42015)
-    pour un run complet. Cause : fenetre de course classique de ce pattern -- entre le
-    moment ou un worker relache le port "libre" qu'il vient de sonder et le moment ou
-    son serveur Flask le reprend reellement, un autre worker peut sonder et recevoir ce
-    meme numero fraichement libere.
-
-    Solution retenue : deriver le port du PID du process courant. Chaque worker xdist
-    est un process distinct, son PID est garanti unique parmi les processus qui tournent
-    en meme temps sur la machine -- aucun socket ouvert puis relache, donc aucune fenetre
-    de course possible.
-    """
-    return 20000 + (os.getpid() % 20000)
-
-
 _BASE_URL_EXPLICITE = os.getenv("BASE_URL")
-if _BASE_URL_EXPLICITE:
-    # BASE_URL fixee volontairement (ex: serveur partage en CI) : on la respecte telle quelle.
-    BASE_URL = _BASE_URL_EXPLICITE
-    PORT_SERVEUR_LOCAL = None
-else:
-    PORT_SERVEUR_LOCAL = _port_libre()
-    BASE_URL = f"http://localhost:{PORT_SERVEUR_LOCAL}"
-
-# Propage vers os.environ pour que le reste du code de ce process (ex: inscription.supprimer_compte,
-# qui relit BASE_URL via os.getenv) cible le meme serveur, y compris sous xdist.
-os.environ["BASE_URL"] = BASE_URL
-
-# Diagnostic temporaire : deux corrections precedentes de la collision de port en CI
-# n'ont pas suffi (toutes les erreurs d'un run pointaient vers le meme port, ce qui ne
-# devrait pas arriver si chaque worker calcule vraiment un port distinct). On ecrit dans
-# un fichier partage (pas stdout/stderr, capture peu fiable sous xdist) ce que CE worker
-# calcule reellement, pour remplacer la supposition par une preuve avant le prochain fix.
-try:
-    with open(Path(tempfile.gettempdir()) / "port_debug.log", "a") as _f:
-        _f.write(
-            f"worker={os.environ.get('PYTEST_XDIST_WORKER')} "
-            f"pid={os.getpid()} ppid={os.getppid()} BASE_URL={BASE_URL}\n"
-        )
-except OSError:
-    pass
 
 # Identifiants du compte de test, centralises ici : un seul endroit a changer.
 COMPTE_TEST_EMAIL = os.getenv("TEST_EMAIL", "eleve.test@codeunmax.fr")
@@ -106,22 +53,74 @@ def _attendre_serveur_pret(url, timeout=10):
     raise RuntimeError(f"Le serveur n'a pas demarre a temps sur {url}")
 
 
+def _demarrer_serveur_local(max_tentatives=5):
+    """Demarre server.py sur un port choisi au hasard, avec nouvelle tentative si ca rate.
+
+    Sous pytest-xdist, chaque worker est un process separe qui demarre son propre
+    serveur local : s'ils tombent sur le meme port, ils se marchent dessus (port deja
+    utilise, ou pire : un worker termine "son" serveur pendant qu'un autre s'en sert
+    encore).
+
+    Deux methodes precedentes pour garantir un port unique par worker (calcul par index
+    xdist, puis port sonde via bind(0)) ont chacune produit le meme symptome en CI
+    (Linux) : plusieurs tests en erreur partageant tous le meme port. La cause exacte
+    n'a pas pu etre confirmee (meme avec un diagnostic dedie qui ecrivait PID et
+    PYTEST_XDIST_WORKER dans un fichier). Plutot que de deviner un troisieme schema
+    cense garantir l'unicite a coup sur, cette version accepte qu'une collision de
+    port puisse arriver et s'en remet : port aleatoire, verification qu'il repond
+    vraiment, sinon nouvelle tentative avec un autre port. Auto-cicatrisant quelle que
+    soit la cause reelle de la collision.
+    """
+    derniere_erreur = None
+    for _ in range(max_tentatives):
+        port = random.randint(20000, 60000)
+        base_url = f"http://localhost:{port}"
+        if _serveur_deja_actif(base_url):
+            continue  # ce port est deja pris (par nous ou quelqu'un d'autre), on en tire un autre
+
+        processus = subprocess.Popen(
+            [sys.executable, "server.py"],
+            cwd=APP_ROOT,
+            env={**os.environ, "BASE_URL": base_url, "PORT": str(port)},
+        )
+        try:
+            _attendre_serveur_pret(base_url, timeout=8)
+            return processus, base_url
+        except RuntimeError as erreur:
+            derniere_erreur = erreur
+            processus.terminate()
+            processus.wait(timeout=5)
+
+    raise RuntimeError(
+        f"Impossible de demarrer un serveur local apres {max_tentatives} tentatives : {derniere_erreur}"
+    )
+
+
 @pytest.fixture(scope="session")
 def live_server():
     """Fournit l'URL de base d'un serveur Flask actif, en le demarrant si besoin."""
-    if _serveur_deja_actif(BASE_URL):
-        yield BASE_URL
+    if _BASE_URL_EXPLICITE:
+        # BASE_URL fixee volontairement (ex: serveur partage en CI) : on la respecte telle quelle.
+        if _serveur_deja_actif(_BASE_URL_EXPLICITE):
+            yield _BASE_URL_EXPLICITE
+            return
+        processus = subprocess.Popen(
+            [sys.executable, "server.py"], cwd=APP_ROOT, env=os.environ
+        )
+        try:
+            _attendre_serveur_pret(_BASE_URL_EXPLICITE)
+            yield _BASE_URL_EXPLICITE
+        finally:
+            processus.terminate()
+            processus.wait(timeout=5)
         return
 
-    port = PORT_SERVEUR_LOCAL if PORT_SERVEUR_LOCAL is not None else 8000
-    processus = subprocess.Popen(
-        [sys.executable, "server.py"],
-        cwd=APP_ROOT,
-        env={**os.environ, "BASE_URL": BASE_URL, "PORT": str(port)},
-    )
+    processus, base_url = _demarrer_serveur_local()
+    # Propage vers os.environ pour que le reste du code de ce process (ex:
+    # inscription.supprimer_compte, qui relit BASE_URL via os.getenv) cible ce serveur.
+    os.environ["BASE_URL"] = base_url
     try:
-        _attendre_serveur_pret(BASE_URL)
-        yield BASE_URL
+        yield base_url
     finally:
         processus.terminate()
         processus.wait(timeout=5)
