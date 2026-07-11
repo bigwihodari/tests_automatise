@@ -1,5 +1,4 @@
 import os
-import socket
 import subprocess
 import sys
 import time
@@ -25,23 +24,31 @@ load_dotenv(APP_ROOT / ".env", override=False)
 
 
 def _port_libre():
-    """Demande un port TCP libre au systeme d'exploitation (bind sur le port 0, puis
-    on relache immediatement). Sous pytest-xdist, chaque worker est un process separe :
-    s'ils demarrent chacun leur propre serveur local sur le meme port par defaut, ils se
-    marchent dessus (port deja utilise, ou pire : un worker termine "son" serveur pendant
-    qu'un autre process s'en sert encore).
+    """Port TCP local a utiliser pour le serveur de ce process, sans jamais l'ouvrir
+    puis le relacher (voir historique des deux tentatives precedentes ci-dessous).
 
-    Premiere version : port calcule a partir de l'index du worker xdist
-    (PYTEST_XDIST_WORKER, ex: "gw0"). Observe en CI (GitHub Actions, Linux) : au moins
-    deux workers sont retombes sur le meme port par defaut malgre ce calcul (cause exacte
-    non confirmee, mais le resultat etait une vraie collision, pas de la flakiness
-    aleatoire : memes echecs a chaque rerun). Remplace par une demande de port libre
-    directement au systeme, qui ne depend d'aucune hypothese sur le format ou le timing
-    de PYTEST_XDIST_WORKER et fonctionne de la meme facon partout.
+    Sous pytest-xdist, chaque worker est un process separe : s'ils demarrent chacun
+    leur propre serveur local sur le meme port, ils se marchent dessus (port deja
+    utilise, ou pire : un worker termine "son" serveur pendant qu'un autre s'en sert
+    encore).
+
+    Tentative 1 : port calcule a partir de l'index du worker xdist (PYTEST_XDIST_WORKER,
+    ex: "gw0"). Observe en CI (Linux) : au moins deux workers sont retombes sur le meme
+    port par defaut malgre ce calcul, collision reproductible a chaque rerun.
+
+    Tentative 2 : demander un port libre a l'OS via bind(0) puis le relacher aussitot.
+    Toujours en CI : plusieurs workers ont obtenu EXACTEMENT le meme port (ex: 42015)
+    pour un run complet. Cause : fenetre de course classique de ce pattern -- entre le
+    moment ou un worker relache le port "libre" qu'il vient de sonder et le moment ou
+    son serveur Flask le reprend reellement, un autre worker peut sonder et recevoir ce
+    meme numero fraichement libere.
+
+    Solution retenue : deriver le port du PID du process courant. Chaque worker xdist
+    est un process distinct, son PID est garanti unique parmi les processus qui tournent
+    en meme temps sur la machine -- aucun socket ouvert puis relache, donc aucune fenetre
+    de course possible.
     """
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("localhost", 0))
-        return s.getsockname()[1]
+    return 20000 + (os.getpid() % 20000)
 
 
 _BASE_URL_EXPLICITE = os.getenv("BASE_URL")
