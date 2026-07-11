@@ -1,4 +1,5 @@
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -23,17 +24,24 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(APP_ROOT / ".env", override=False)
 
 
-def _port_dedie_au_worker(port_defaut=8000):
-    """Sous pytest-xdist, chaque worker est un process separe. S'ils demarrent chacun
-    leur propre serveur local sur le meme port par defaut, ils se marchent dessus
-    (port deja utilise, ou pire : un worker termine "son" serveur pendant qu'un autre
-    processus s'en sert encore). On donne donc un port distinct a chaque worker.
+def _port_libre():
+    """Demande un port TCP libre au systeme d'exploitation (bind sur le port 0, puis
+    on relache immediatement). Sous pytest-xdist, chaque worker est un process separe :
+    s'ils demarrent chacun leur propre serveur local sur le meme port par defaut, ils se
+    marchent dessus (port deja utilise, ou pire : un worker termine "son" serveur pendant
+    qu'un autre process s'en sert encore).
+
+    Premiere version : port calcule a partir de l'index du worker xdist
+    (PYTEST_XDIST_WORKER, ex: "gw0"). Observe en CI (GitHub Actions, Linux) : au moins
+    deux workers sont retombes sur le meme port par defaut malgre ce calcul (cause exacte
+    non confirmee, mais le resultat etait une vraie collision, pas de la flakiness
+    aleatoire : memes echecs a chaque rerun). Remplace par une demande de port libre
+    directement au systeme, qui ne depend d'aucune hypothese sur le format ou le timing
+    de PYTEST_XDIST_WORKER et fonctionne de la meme facon partout.
     """
-    worker_id = os.environ.get("PYTEST_XDIST_WORKER")  # ex: "gw0" ; absent hors xdist
-    if not worker_id or worker_id == "master":
-        return port_defaut
-    index = int(worker_id.replace("gw", ""))
-    return port_defaut + 1 + index
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("localhost", 0))
+        return s.getsockname()[1]
 
 
 _BASE_URL_EXPLICITE = os.getenv("BASE_URL")
@@ -42,7 +50,7 @@ if _BASE_URL_EXPLICITE:
     BASE_URL = _BASE_URL_EXPLICITE
     PORT_SERVEUR_LOCAL = None
 else:
-    PORT_SERVEUR_LOCAL = _port_dedie_au_worker()
+    PORT_SERVEUR_LOCAL = _port_libre()
     BASE_URL = f"http://localhost:{PORT_SERVEUR_LOCAL}"
 
 # Propage vers os.environ pour que le reste du code de ce process (ex: inscription.supprimer_compte,
