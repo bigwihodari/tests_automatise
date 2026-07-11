@@ -25,40 +25,9 @@ jobs:
       - name: Lancer ruff
         run: ruff check .
 
-  unit_tests:
-    name: Tests unitaires et mockes
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: pip
-
-      - name: Installer les dependances
-        run: pip install -r requirements.txt
-
-      - name: Lancer les tests unitaires et mockes
-        run: pytest -v -m unit --disable-socket --junitxml=unit-report.xml --html=rapport.html --self-contained-html
-
-      - name: Publier le rapport de tests
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: unit-test-report
-          path: unit-report.xml
-
-      - name: Publier le rapport HTML
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rapport-tests-unitaires
-          path: rapport.html
-
-  e2e_tests:
-    name: Tests E2E (Selenium)
-    needs: unit_tests
+  tests_complets:
+    name: Suite complete (unitaires + E2E cross-browser, parallele)
+    needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,22 +43,32 @@ jobs:
       - name: Installer Chrome
         uses: browser-actions/setup-chrome@v1
 
-      - name: Lancer les tests E2E
+      - name: Installer Firefox
+        uses: browser-actions/setup-firefox@v1
+
+      - name: Lancer la suite complete (unitaires + E2E, parallele, couverture)
         env:
+          # Mode headless obligatoire : le runner CI n'a pas d'affichage graphique.
           HEADLESS: "1"
-          BASE_URL: "http://localhost:8000"
-        run: pytest -v -m e2e --junitxml=e2e-report.xml --html=rapport.html --self-contained-html
+        run: pytest --cov --cov-report=html --cov-report=term-missing -n auto --junitxml=rapport-junit.xml --html=rapport.html --self-contained-html
 
-      - name: Publier le rapport de tests
+      - name: Publier le rapport de tests (HTML)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: e2e-test-report
-          path: e2e-report.xml
-
-      - name: Publier le rapport HTML
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: rapport-tests-e2e
+          name: rapport-tests
           path: rapport.html
+
+      - name: Publier le rapport JUnit
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-junit
+          path: rapport-junit.xml
+
+      - name: Publier le rapport de couverture
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rapport-couverture
+          path: htmlcov/

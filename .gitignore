@@ -3,9 +3,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
-*-report.xml
-rapport.html
-htmlcov/
+/*-report.xml
+/rapport-junit.xml
+/rapport.html
+/htmlcov/
 .coverage
 .coverage.*
 .claude/
