@@ -1,6 +1,7 @@
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -63,6 +64,20 @@ else:
 # Propage vers os.environ pour que le reste du code de ce process (ex: inscription.supprimer_compte,
 # qui relit BASE_URL via os.getenv) cible le meme serveur, y compris sous xdist.
 os.environ["BASE_URL"] = BASE_URL
+
+# Diagnostic temporaire : deux corrections precedentes de la collision de port en CI
+# n'ont pas suffi (toutes les erreurs d'un run pointaient vers le meme port, ce qui ne
+# devrait pas arriver si chaque worker calcule vraiment un port distinct). On ecrit dans
+# un fichier partage (pas stdout/stderr, capture peu fiable sous xdist) ce que CE worker
+# calcule reellement, pour remplacer la supposition par une preuve avant le prochain fix.
+try:
+    with open(Path(tempfile.gettempdir()) / "port_debug.log", "a") as _f:
+        _f.write(
+            f"worker={os.environ.get('PYTEST_XDIST_WORKER')} "
+            f"pid={os.getpid()} ppid={os.getppid()} BASE_URL={BASE_URL}\n"
+        )
+except OSError:
+    pass
 
 # Identifiants du compte de test, centralises ici : un seul endroit a changer.
 COMPTE_TEST_EMAIL = os.getenv("TEST_EMAIL", "eleve.test@codeunmax.fr")
